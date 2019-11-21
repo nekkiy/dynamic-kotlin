@@ -1,7 +1,7 @@
 package com.example
 
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
-import org.jetbrains.kotlin.cli.common.config.addKotlinSourceRoot
+import org.jetbrains.kotlin.cli.common.config.addKotlinSourceRoots
 import org.jetbrains.kotlin.cli.common.messages.MessageRenderer
 import org.jetbrains.kotlin.cli.common.messages.PrintingMessageCollector
 import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
@@ -14,24 +14,47 @@ import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.JVMConfigurationKeys
 import org.jetbrains.kotlin.config.JvmTarget
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.PrintStream
 import kotlin.script.experimental.jvm.util.KotlinJars
+import kotlin.script.experimental.jvm.util.classpathFromClassloader
 
 class KotlinDynamicCompiler {
-    fun compileScript(moduleName: String,
-                      sourcePath: String,
-                      saveClassesDir: File
+    fun compileModule(moduleName: String,
+                      sourcePath: List<String>,
+                      saveClassesDir: File,
+                      classLoader: ClassLoader? = null,
+                      forcedAddKotlinStd: Boolean = true
+
     ): GenerationState {
         val stubDisposable = StubDisposable();
         val configuration = CompilerConfiguration()
         configuration.put(CommonConfigurationKeys.MODULE_NAME, moduleName)
-        configuration.put(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY, PrintingMessageCollector(System.out, MessageRenderer.PLAIN_FULL_PATHS, true))
+        val baos = ByteArrayOutputStream()
+        val ps: PrintStream = PrintStream(baos)
+        configuration.put(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY, PrintingMessageCollector(ps, MessageRenderer.PLAIN_FULL_PATHS, true))
         configuration.put(JVMConfigurationKeys.OUTPUT_DIRECTORY, saveClassesDir)
+//        configuration.put(JVMConfigurationKeys.RETAIN_OUTPUT_IN_MEMORY, true)
         configuration.put(JVMConfigurationKeys.JVM_TARGET, JvmTarget.JVM_1_8)
-        configuration.addKotlinSourceRoot(sourcePath)
-        configuration.addJvmClasspathRoots(listOf(KotlinJars.stdlib))
+        val classPath = mutableSetOf<File>()
+        if (classLoader != null) {
+            classPath.addAll(classpathFromClassloader(classLoader)!!);
+        }
+        if (forcedAddKotlinStd) {
+            classPath.add(KotlinJars.stdlib)
+        }
+        configuration.addJvmClasspathRoots(classPath.toList())
+        configuration.addKotlinSourceRoots(sourcePath)
         val env = KotlinCoreEnvironment.createForProduction(stubDisposable, configuration, EnvironmentConfigFiles.JVM_CONFIG_FILES)
-        return KotlinToJVMBytecodeCompiler.analyzeAndGenerate(env)!!;
+        val result = KotlinToJVMBytecodeCompiler.analyzeAndGenerate(env);
+        ps.flush();
+        if (result != null) {
+            return result
+        } else {
+            throw IllegalStateException("Compilation error. Details:\n$baos")
+        }
+
     }
 
     inner class StubDisposable : Disposable {
